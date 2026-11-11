@@ -1,9 +1,9 @@
 const BASE_PATH = window.BASE_PATH;
 const API_BASE = `${BASE_PATH}/api/schedule`;
 const STATUS_API = `${BASE_PATH}/api/status`;
-const LABE_NOW_OPEN = '🟢 営業中';
-const LABE_PREPARING = '🟡 準備中';
-const LABE_CLOSED = '🔵 営業終了';
+const LABEL_NOW_OPEN = '🟢 営業中';
+const LABEL_PREPARING = '🟡 準備中';
+const LABEL_CLOSED = '🔵 営業終了';
 
 /**
  * HTML 特殊文字をエスケープする。
@@ -28,22 +28,41 @@ let renderedCardIds = [];
 // Path detection
 const currentPath = window.location.pathname.replace(/\/$/, '');
 const isMapPage = currentPath.endsWith('/map') || currentPath.endsWith('/map/index.html') || currentPath.endsWith('/map.html');
-const isListPage = currentPath.endsWith('/list') || currentPath.endsWith('/list/index.html') || currentPath.endsWith('/list.html');
 
-const currentView = (isMapPage || isListPage) ? 'list' : (localStorage.getItem('ksu-harapeco-view') || 'grid');
+const currentView = isMapPage ? 'list' : 'grid';
 
 function getTargetDateStr() {
     const urlParams = new URLSearchParams(window.location.search);
-    let dateStr = urlParams.get('date');
-    if (!dateStr || dateStr === 'today') {
-        dateStr = new Date().toLocaleDateString('sv-SE');
+    const dateStr = urlParams.get('date');
+
+    if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [year, month, day] = dateStr.split('-').map(Number);
+
+        // タイムゾーンへの依存を避け、日付の自動補正を検出するためUTCで比較する。
+        const date = new Date(0);
+        date.setUTCFullYear(year, month - 1, day);
+
+        if (
+            date.getUTCFullYear() === year &&
+            date.getUTCMonth() === month - 1 &&
+            date.getUTCDate() === day
+        ) {
+            return dateStr;
+        }
     }
-    return dateStr;
+    // 未指定、today、または不正な日付の場合は日本時間の今日を返す
+    return todayJst();
+}
+
+function todayJst() {
+    return new Date().toLocaleDateString('sv-SE', {
+        timeZone: 'Asia/Tokyo'
+    });
 }
 
 function reloadPage() {
     const targetDateStr = getTargetDateStr();
-    const realWorldToday = new Date().toLocaleDateString('sv-SE');
+    const realWorldToday = todayJst();
     if (targetDateStr === realWorldToday) {
         window.location.search = '';
     } else {
@@ -54,17 +73,23 @@ function reloadPage() {
 function getShopStatus(startTime, endTime, targetDateStr) {
     const closedStatus = { label: '休業', class: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400' };
     if (!startTime || !endTime || startTime === '00:00') return closedStatus;
-    const now = new Date();
-    const todayStr = now.toLocaleDateString('sv-SE');
-    if (targetDateStr < todayStr) return { label: LABE_CLOSED, class: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400' };
-    if (targetDateStr > todayStr) return { label: LABE_PREPARING, class: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' };
+    const todayStr = todayJst();
 
-    const nowTotal = now.getHours() * 60 + now.getMinutes();
+    const nowTime = new Date().toLocaleTimeString('en-GB', {
+        timeZone: 'Asia/Tokyo',
+        hour12: false
+    });
+
+    const [hours, minutes] = nowTime.split(':').map(Number);
+    if (targetDateStr < todayStr) return { label: LABEL_CLOSED, class: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400' };
+    if (targetDateStr > todayStr) return { label: LABEL_PREPARING, class: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' };
+
+    const nowTotal = hours * 60 + minutes;
     const [sh, sm] = startTime.split(':').map(Number);
     const [eh, em] = endTime.split(':').map(Number);
-    if (nowTotal < (sh*60+sm)) return { label: LABE_PREPARING, class: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' };
-    if (nowTotal >= (sh*60+sm) && nowTotal < (eh*60+em)) return { label: LABE_NOW_OPEN, class: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' };
-    return { label: LABE_CLOSED, class: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400' };
+    if (nowTotal < (sh*60+sm)) return { label: LABEL_PREPARING, class: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' };
+    if (nowTotal >= (sh*60+sm) && nowTotal < (eh*60+em)) return { label: LABEL_NOW_OPEN, class: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' };
+    return { label: LABEL_CLOSED, class: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400' };
 }
 
 function updateElementText(id, text) {
@@ -85,26 +110,33 @@ function setElementDisplay(id, display) {
 
 async function fetchData() {
     const targetDateStr = getTargetDateStr();
-    const dateObj = new Date(targetDateStr);
-    const dayOfWeek = ['日', '月', '火', '水', '木', '金', '土'][dateObj.getDay()];
+
+    const [year, month, day] = targetDateStr.split('-').map(Number);
+    const dateObj = new Date(Date.UTC(year, month - 1, day));
+
+    const dayOfWeek = ['日', '月', '火', '水', '木', '金', '土'][dateObj.getUTCDay()];
     
     updateElementText('current-date-display', `${targetDateStr} (${dayOfWeek})`);
     setElementDisplay('loading-overlay', 'flex');
     
-    const current = new Date(targetDateStr);
-    const prev = new Date(current); prev.setDate(prev.getDate() - 1);
-    const next = new Date(current); next.setDate(next.getDate() + 1);
+    const current = new Date(Date.UTC(year, month - 1, day));
+
+    const prev = new Date(current);
+    prev.setUTCDate(prev.getUTCDate() - 1);
+
+    const next = new Date(current);
+    next.setUTCDate(next.getUTCDate() + 1);
     
     // 日付の移動のボタンは、PC の日付ナビとスマートフォンの操作バーに1組ずつあるので、両方に設定する
     document.querySelectorAll('[data-action="prev-day"]').forEach(btn => {
-        btn.onclick = () => window.location.search = "date=" + prev.toLocaleDateString('sv-SE');
+        btn.onclick = () => window.location.search = "date=" + prev.toISOString().slice(0, 10);
     });
     document.querySelectorAll('[data-action="next-day"]').forEach(btn => {
-        btn.onclick = () => window.location.search = "date=" + next.toLocaleDateString('sv-SE');
+        btn.onclick = () => window.location.search = "date=" + next.toISOString().slice(0, 10);
     });
     document.querySelectorAll('[data-action="today"]').forEach(btn => {
         btn.onclick = () => window.location.search = '';
-        btn.disabled = (targetDateStr === new Date().toLocaleDateString('sv-SE'));
+        btn.disabled = (targetDateStr === todayJst());
     });
 
     try {
@@ -152,7 +184,15 @@ async function fetchData() {
 
         if (statusRes.ok) {
             const status = await statusRes.json();
-            updateElementText('status-info', '最終更新: ' + new Date(status.last_updated).toLocaleString('ja-JP'));
+            const updated = new Date(status.last_updated).toLocaleString('sv-SE', {
+                timeZone: 'Asia/Tokyo',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+            });
+            updateElementText('status-info', '最終更新：' + updated);
             updateElementText('header-data-range', '提供範囲: ' + status.data_range.start + ' ～ ' + status.data_range.end);
         }
     } catch (e) {
@@ -262,10 +302,10 @@ function render(onRendered) {
     const getLabel = (s) => getShopStatus(s.start_time, s.end_time, targetDateStr).label;
     
     // 1. Filter
-    allShops = allShops.filter(s => Filter.match(s, getLabel(s), LABE_NOW_OPEN));
+    allShops = allShops.filter(s => Filter.match(s, getLabel(s), LABEL_NOW_OPEN));
 
     // 2. Sort
-    allShops = Sort.sort(allShops, getLabel, LABE_NOW_OPEN);
+    allShops = Sort.sort(allShops, getLabel, LABEL_NOW_OPEN);
 
     renderedCardIds = allShops.map(shop => 'card-' + shop.id);
     if (allShops.length === 0) {
@@ -535,14 +575,14 @@ document.querySelector('#map-wrapper img')?.addEventListener('load', updateOverl
 const targetDateStr = getTargetDateStr();
 document.querySelectorAll('nav a').forEach(a => {
     const url = new URL(a.href, window.location.origin);
+    if (url.origin !== window.location.origin) return;
     url.searchParams.set('date', targetDateStr);
     a.href = url.toString();
     
     const href = a.getAttribute('href').replace(/\/$/, '');
     const isHome = href === '' || href === `${BASE_PATH}`;
-    const isMatch = (isHome && !isMapPage && !isListPage) || 
-                    (href.endsWith('/map') && isMapPage) || 
-                    (href.endsWith('/list') && isListPage);
+    const isMatch = (isHome && !isMapPage) ||
+                    (href.endsWith('/map') && isMapPage);
 
     if (isMatch) a.classList.add('bg-slate-100', 'dark:bg-slate-800', 'text-ksu', 'dark:text-blue-400');
 });
@@ -580,6 +620,5 @@ if (dateSelector && dateInput && typeof flatpickr === 'function') {
 // }
 
 document.addEventListener('DOMContentLoaded', () => {
-    const isDataPage = ['index.html', 'list.html', 'map.html', '', '/'].some(page => window.location.pathname.endsWith(page));
-    if (isDataPage) fetchData();
+    if (document.getElementById('shop-grid')) fetchData();
 });
